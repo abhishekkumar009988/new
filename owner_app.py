@@ -26,9 +26,12 @@ from owner_services.licensing_db import LicensingDB
 
 app = Flask(__name__)
 
-# Secret key for session management
+# Secret key for session management: prefer an injected secret in production.
 _secret_path = DATA_DIR / '.secret_key'
-if _secret_path.exists():
+_env_secret = os.environ.get('OWNER_SECRET_KEY')
+if _env_secret:
+    app.secret_key = _env_secret
+elif _secret_path.exists():
     app.secret_key = _secret_path.read_text(encoding='utf-8').strip()
 else:
     app.secret_key = secrets.token_hex(32)
@@ -37,6 +40,7 @@ else:
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SECURE=bool(os.environ.get('RENDER')),
     PERMANENT_SESSION_LIFETIME=timedelta(hours=24)
 )
 
@@ -47,10 +51,19 @@ db = LicensingDB(DATA_DIR / 'licensing.db')
 def setup_default_owner():
     if not db.get_admin('owner'):
         salt = secrets.token_bytes(32)
-        default_pwd = os.environ.get('OWNER_INITIAL_PASSWORD', 'OwnerAdmin2026!')
+        default_pwd = os.environ.get('OWNER_INITIAL_PASSWORD')
+        if not default_pwd:
+            # Never ship a hardcoded admin password. Generate a one-time secret
+            # and store it outside git (on the mounted data directory).
+            default_pwd = secrets.token_urlsafe(18)
+            (DATA_DIR / 'INITIAL_OWNER_PASSWORD.txt').write_text(
+                f"username: owner\npassword: {default_pwd}\n", encoding='utf-8'
+            )
+            print("[Owner Setup] WARNING: no OWNER_INITIAL_PASSWORD set; generated a one-time password.")
+            print("[Owner Setup] Stored it at data/INITIAL_OWNER_PASSWORD.txt (not in git).")
         key = hashlib.pbkdf2_hmac('sha256', default_pwd.encode('utf-8'), salt, 600_000)
         db.create_admin('owner', key.hex(), salt.hex(), role='owner')
-        print(f"[Owner Setup] Initial owner account created. Username: owner | Password: {default_pwd}")
+        print("[Owner Setup] Initial owner account 'owner' created.")
 
 setup_default_owner()
 
@@ -521,6 +534,6 @@ if __name__ == '__main__':
     print(f"\n=======================================================")
     print(f" STAR INVESTIGATOR — LICENSE CONTROL CENTER")
     print(f" Private Owner Dashboard running at: http://127.0.0.1:{port}")
-    print(f" Default Login: username: owner | password: {os.environ.get('OWNER_INITIAL_PASSWORD', 'OwnerAdmin2026!')}")
+    print(f" Login: user 'owner' | password from OWNER_INITIAL_PASSWORD (or data/INITIAL_OWNER_PASSWORD.txt)")
     print(f"=======================================================\n")
     app.run(host='0.0.0.0', port=port, debug=False)

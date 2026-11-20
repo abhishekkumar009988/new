@@ -1,9 +1,11 @@
+import os
 import json
 import base64
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 from cryptography.exceptions import InvalidSignature
+
 
 class CryptoSigner:
     """Ed25519 Digital Signing Service for License Entitlements."""
@@ -16,6 +18,15 @@ class CryptoSigner:
         self._load_or_generate_keys()
 
     def _load_or_generate_keys(self):
+        # Preferred in production: inject the signing key through a secret env
+        # variable so it never lives in git or on an ephemeral filesystem.
+        env_key = os.environ.get('OWNER_ED25519_PRIVATE_KEY_B64')
+        if env_key:
+            private_bytes = base64.b64decode(env_key)
+            self.private_key = serialization.load_pem_private_key(private_bytes, password=None)
+            self.public_key = self.private_key.public_key()
+            return
+
         if self.private_key_path.exists() and self.public_key_path.exists():
             private_bytes = self.private_key_path.read_bytes()
             self.private_key = serialization.load_pem_private_key(private_bytes, password=None)
@@ -25,20 +36,19 @@ class CryptoSigner:
             self.private_key = ed25519.Ed25519PrivateKey.generate()
             self.public_key = self.private_key.public_key()
 
-            # Save private key securely
-            priv_pem = self.private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
+            self.private_key_path.write_bytes(
+                self.private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()
+                )
             )
-            self.private_key_path.write_bytes(priv_pem)
-
-            # Save public key
-            pub_pem = self.public_key.public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo
+            self.public_key_path.write_bytes(
+                self.public_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                )
             )
-            self.public_key_path.write_bytes(pub_pem)
 
     def canonical_bytes(self, payload: dict) -> bytes:
         """Deterministic UTF-8 JSON representation for signing."""
@@ -51,17 +61,19 @@ class CryptoSigner:
         return base64.b64encode(sig).decode('ascii')
 
     def verify(self, payload: dict, signature_b64: str) -> bool:
-        """Verifies signature against payload."""
         try:
             raw_bytes = self.canonical_bytes(payload)
             sig = base64.b64decode(signature_b64)
             self.public_key.verify(sig, raw_bytes)
             return True
-        except (InvalidSignature, Exception):
+        except Exception:
             return False
 
     def get_public_key_pem(self) -> str:
-        return self.public_key_path.read_text(encoding='utf-8').strip()
+        return self.public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode('ascii').strip()
 
     def get_public_key_base64(self) -> str:
         raw = self.public_key.public_bytes(

@@ -1,0 +1,19 @@
+databases: []
+services:
+  - type: web
+    name: star-investigator-license-center
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn owner_app:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /login
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: OWNER_SECRET_KEY
+        generateValue: true
+      - key: OWNER_INITIAL_PASSWORD
+        generateValue: true
+      - key: OWNER_ED25519_PRIVATE_KEY_B64
+        sync: false
